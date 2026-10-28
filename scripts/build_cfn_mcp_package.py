@@ -63,7 +63,7 @@ def to_cfn_schema(schema: dict) -> dict:
         out["Type"] = schema["type"]
     if "description" in schema:
         out["Description"] = schema["description"]
-    if "required" in schema and schema["required"]:
+    if schema.get("required"):
         out["Required"] = list(schema["required"])
     props = schema.get("properties")
     if isinstance(props, dict) and props:
@@ -121,9 +121,14 @@ def build_template(defs: list[dict], cfg: dict) -> dict:
     timeout = cfg["timeout"]
     memory = cfg["memory"]
 
-    sub = lambda s: {"Fn::Sub": s}  # noqa: E731
-    ref = lambda r: {"Ref": r}  # noqa: E731
-    getatt = lambda r, a: {"Fn::GetAtt": [r, a]}  # noqa: E731
+    def sub(s: str) -> dict:
+        return {"Fn::Sub": s}
+
+    def ref(r: str) -> dict:
+        return {"Ref": r}
+
+    def getatt(r: str, a: str) -> dict:
+        return {"Fn::GetAtt": [r, a]}
 
     tool_statements = [
         {"Effect": "Allow", "Action": iam_actions, "Resource": "*"},
