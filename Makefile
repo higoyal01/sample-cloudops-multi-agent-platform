@@ -3,7 +3,7 @@
 # Common commands for development, testing, and deployment.
 # Run `make help` to see all available targets.
 
-.PHONY: help setup configure quickstart reconfigure-shared nuke-shared-config test test-unit test-integration test-topology test-scripts lint plan deploy deploy-auto destroy destroy-all package build-agents clean
+.PHONY: help setup configure quickstart reconfigure-shared nuke-shared-config test test-unit test-integration test-topology test-scripts lint plan deploy deploy-auto destroy destroy-all package cfn-mcp-package cfn-mcp-check build-agents clean
 
 SHELL := /bin/bash
 
@@ -257,6 +257,13 @@ package: $(HASH_DIR) ## Package Lambda tools (only changed ones, parallel)
 		fi; \
 	done
 
+# ---------------------------------------------------------------------------
+# Standalone CloudFormation package -- Lambda Runtime Upgrade MCP server
+# ---------------------------------------------------------------------------
+cfn-mcp-package: ## Regenerate Lambda Runtime MCP CFN template + zip in deploy/mcp/cfn/lambda-runtime
+	@$(PYTHON) scripts/build_cfn_mcp_package.py
+cfn-mcp-check: ## Fail if deploy/mcp/cfn/lambda-runtime is stale vs. tool source
+	@$(PYTHON) scripts/build_cfn_mcp_package.py --check
 # ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
