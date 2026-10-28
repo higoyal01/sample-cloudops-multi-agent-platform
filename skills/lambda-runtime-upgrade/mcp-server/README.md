@@ -1,4 +1,9 @@
-# Lambda Runtime Upgrade MCP server: CloudFormation deployment
+# Lambda Runtime Upgrade skill: MCP server deployment
+
+This folder is the deployment asset for the
+[`lambda-runtime-upgrade`](../SKILL.md) skill. The skill is the playbook. This
+folder deploys the tools it calls, which a hosted agent like AWS DevOps Agent needs
+because it has no shell to scan regions or unzip code itself.
 
 A standalone CloudFormation stack that deploys only the MCP server behind the
 `/lambda-runtime-upgrade` skill and the `lambda-upgrade-agent`: an Amazon
@@ -9,7 +14,7 @@ Use this path when you want to plug the Lambda runtime tools into
 [AWS DevOps Agent](#connect-to-aws-devops-agent) or another MCP client, without
 deploying the full platform. For the Terraform path, see
 `DEPLOY_MODE=gateway-only DEPLOY_TOOLS=lambda-runtime make deploy-auto` in the
-[runbook](../../../../docs/runbooks/lambda-runtime-mcp-devops-agent.md).
+[runbook](../../../docs/runbooks/lambda-runtime-mcp-devops-agent.md).
 
 ## Files
 
@@ -78,12 +83,12 @@ ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 BUCKET=lambda-upgrade-artifacts-${ACCOUNT_ID}
 
 aws s3 mb "s3://${BUCKET}" --region "${REGION}"
-aws s3 cp deploy/mcp/cfn/lambda-runtime/lambda-runtime-tool.zip "s3://${BUCKET}/lambda-runtime-tool.zip"
+aws s3 cp skills/lambda-runtime-upgrade/mcp-server/lambda-runtime-tool.zip "s3://${BUCKET}/lambda-runtime-tool.zip"
 
 aws cloudformation deploy \
   --region "${REGION}" \
   --stack-name lambda-runtime-mcp \
-  --template-file deploy/mcp/cfn/lambda-runtime/lambda-runtime-mcp.yaml \
+  --template-file skills/lambda-runtime-upgrade/mcp-server/lambda-runtime-mcp.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides CodeBucket="${BUCKET}" CreateDevOpsAgentRole=true
 
@@ -129,9 +134,11 @@ Leave both as they are. The bucket only has to be readable by CloudFormation and
 4. Review and submit. DevOps Agent assumes the role and calls `tools/list` to validate.
 5. Open your **Agent Space**, then **Capabilities**, then **MCP Servers**, then **Add**. Select
    `cloudops-lambda-runtime` and **Allow all tools**. All 8 tools are read-only.
-6. Optional: add `skills/lambda-runtime-upgrade/SKILL.md` as a skill in the
-   Agent Space so the agent prefers the one-shot `generate_upgrade_analysis`
-   call and reads source from the tool response.
+6. Add the skill itself to the Agent Space: [`../SKILL.md`](../SKILL.md) and
+   [`../reference/runtime-migration-kb.md`](../reference/runtime-migration-kb.md).
+   With it, the agent prefers the one-shot `generate_upgrade_analysis` call and
+   reads source from the tool response. You don't need to upload this
+   `mcp-server/` folder to the Agent Space; it's only for deploying.
 
 Test with: `Find Lambda functions on deprecated runtimes in us-east-1 and generate a migration report.`
 
@@ -139,7 +146,7 @@ If registration fails with `Invalid STS role configuration for session
 sigv4McpServerSession`, confirm `DevOpsAgentAccountId` is the account that owns
 the Agent Space. Then wait about 60 seconds for IAM propagation and retry. For more
 failure modes, see the troubleshooting table in the
-[runbook](../../../../docs/runbooks/lambda-runtime-mcp-devops-agent.md#10-troubleshooting).
+[runbook](../../../docs/runbooks/lambda-runtime-mcp-devops-agent.md#10-troubleshooting).
 
 ## Scanning other accounts
 
