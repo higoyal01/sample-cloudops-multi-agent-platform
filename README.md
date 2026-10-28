@@ -246,13 +246,6 @@ terraform/
   modules/core/                 # system modules (runtime, gateway, memory, cognito, etc.)
   modules/custom/               # Optional modules (health-events, network-resilience)
 
-deploy/
-  mcp/cfn/lambda-runtime/       # Ready-to-deploy CFN kit for the Lambda Runtime MCP server
-    lambda-runtime-mcp.yaml     #   CloudFormation template (generated)
-    lambda-runtime-tool.zip     #   Prebuilt Lambda package (generated)
-    deployer-permissions.json   #   IAM policy for the stack creator
-    README.md                   #   Deploy + AWS DevOps Agent steps
-
 scripts/
   build_cfn_mcp_package.py      # Generates the Lambda Runtime MCP CFN template + zip
   deploy.sh + lib/              # Deploy orchestrator + sub-scripts
@@ -276,6 +269,14 @@ docs/
 skills/                         # Portable agent skills (invocable as /skill-name)
   developer-guide/SKILL.md      # Adding agents / tools / collectors (interactive)
   discounted-commitments/       # SP/RI sizing — 3 markdown files, no code
+  lambda-runtime-upgrade/       # Lambda runtime upgrade skill + everything needed to deploy it
+    SKILL.md                    #   Workflow, routing rules, report template
+    reference/                  #   Runtime deprecation / breaking-change knowledge base
+    mcp-server/                 #   Ready-to-deploy MCP server for the skill's tools
+      lambda-runtime-mcp.yaml   #     CloudFormation template (generated)
+      lambda-runtime-tool.zip   #     Prebuilt Lambda package (generated)
+      deployer-permissions.json #     IAM policy for the stack creator
+      README.md                 #     Deploy + AWS DevOps Agent steps
 
 tests/unit/                     # pytest + moto
 ```
@@ -294,7 +295,7 @@ make deploy               Interactive deployment
 make plan                 Terraform plan only
 make package              Package Lambda tools (hash-based, parallel)
 make build-agents         Build container images only
-make cfn-mcp-package      Regenerate deploy/mcp/cfn/lambda-runtime (template + zip)
+make cfn-mcp-package      Regenerate skills/lambda-runtime-upgrade/mcp-server (template + zip)
 make cfn-mcp-check        Fail if that folder is stale vs. tool source
 
 make backfill-health DAYS=30 [ORG=1] [ROLE_ARN=...]   See docs/agents/health-events.md
@@ -368,7 +369,7 @@ See `.env.example` for the canonical identity-only `.env` template and
     how the portable skill and the deployed Lambda stay in agreement.
 - [docs/runbooks/lambda-runtime-mcp-devops-agent.md](docs/runbooks/lambda-runtime-mcp-devops-agent.md)
   — deploy the Lambda Runtime MCP server and connect it to AWS DevOps Agent.
-- [deploy/mcp/cfn/lambda-runtime/](deploy/mcp/cfn/lambda-runtime/README.md)
+- [skills/lambda-runtime-upgrade/mcp-server/](skills/lambda-runtime-upgrade/mcp-server/README.md)
   — standalone CloudFormation template + prebuilt Lambda zip for the same MCP server.
 - [docs/observability-tuning.md](docs/observability-tuning.md) —
   X-Ray sampling and Transaction Search indexing knobs.
@@ -424,11 +425,13 @@ Once connected, skills detect the tools automatically and skip the CLI/delegate 
 
 You can run the Lambda Runtime Upgrade capability inside
 [AWS DevOps Agent](https://aws.amazon.com/devops-agent/) without deploying the
-rest of this platform. It's two pieces, both in this repo, that work together:
+rest of this platform. Everything lives in one folder,
+[`skills/lambda-runtime-upgrade/`](skills/lambda-runtime-upgrade/), as two pieces
+that work together:
 
 | Piece | Location | Role |
 |-------|----------|------|
-| **MCP server** | [`deploy/mcp/cfn/lambda-runtime/`](deploy/mcp/cfn/lambda-runtime/README.md) | The tools. An AgentCore Gateway plus one read-only Lambda that discovers deprecated runtimes across regions, downloads and unzips function code, and runs breaking-change detection server-side. Ships as a CloudFormation template plus a prebuilt Lambda zip. |
+| **MCP server** | [`skills/lambda-runtime-upgrade/mcp-server/`](skills/lambda-runtime-upgrade/mcp-server/README.md) | The tools. An AgentCore Gateway plus one read-only Lambda that discovers deprecated runtimes across regions, downloads and unzips function code, and runs breaking-change detection server-side. Ships as a CloudFormation template plus a prebuilt Lambda zip. |
 | **Skill** | [`skills/lambda-runtime-upgrade/`](skills/lambda-runtime-upgrade/SKILL.md) | The playbook. Tells the agent to ask which regions to scan first, prefer the one-shot `generate_upgrade_analysis` call, read source from the tool response, and format the migration report. Includes [`reference/runtime-migration-kb.md`](skills/lambda-runtime-upgrade/reference/runtime-migration-kb.md), the deprecation dates and per-runtime breaking changes the agent checks against. |
 
 The MCP server gives the agent capabilities a hosted agent doesn't have on its
@@ -455,7 +458,7 @@ Pick one path. Both create the same gateway and tool.
 
 | Path | Best for | Command |
 |------|----------|---------|
-| **CloudFormation** (standalone) | Customers without Terraform, console-only users, quick trials | See [deploy/mcp/cfn/lambda-runtime](deploy/mcp/cfn/lambda-runtime/README.md). Template and Lambda zip are prebuilt, so nothing needs building. |
+| **CloudFormation** (standalone) | Customers without Terraform, console-only users, quick trials | See [skills/lambda-runtime-upgrade/mcp-server](skills/lambda-runtime-upgrade/mcp-server/README.md). Template and Lambda zip are prebuilt, so nothing needs building. |
 | **Terraform** (this repo) | Teams already running the platform | `DEPLOY_MODE=gateway-only DEPLOY_TOOLS=lambda-runtime make deploy-auto` |
 
 CloudFormation quick start (from the repo root; the Console-only steps are in the folder README):
@@ -463,10 +466,10 @@ CloudFormation quick start (from the repo root; the Console-only steps are in th
 ```bash
 BUCKET=lambda-upgrade-artifacts-$(aws sts get-caller-identity --query Account --output text)
 aws s3 mb "s3://${BUCKET}"
-aws s3 cp deploy/mcp/cfn/lambda-runtime/lambda-runtime-tool.zip "s3://${BUCKET}/"
+aws s3 cp skills/lambda-runtime-upgrade/mcp-server/lambda-runtime-tool.zip "s3://${BUCKET}/"
 aws cloudformation deploy \
   --stack-name lambda-runtime-mcp \
-  --template-file deploy/mcp/cfn/lambda-runtime/lambda-runtime-mcp.yaml \
+  --template-file skills/lambda-runtime-upgrade/mcp-server/lambda-runtime-mcp.yaml \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides CodeBucket="${BUCKET}" CreateDevOpsAgentRole=true
 aws cloudformation describe-stacks --stack-name lambda-runtime-mcp --query "Stacks[0].Outputs"
@@ -491,11 +494,13 @@ role by hand (see the [runbook](docs/runbooks/lambda-runtime-mcp-devops-agent.md
 
 ### 3. Add the skill to the Agent Space
 
-Add the contents of [`skills/lambda-runtime-upgrade/`](skills/lambda-runtime-upgrade/)
+From [`skills/lambda-runtime-upgrade/`](skills/lambda-runtime-upgrade/), add these
 as a skill in the same Agent Space:
 
 - [`SKILL.md`](skills/lambda-runtime-upgrade/SKILL.md): the workflow, routing rules, and report template
 - [`reference/runtime-migration-kb.md`](skills/lambda-runtime-upgrade/reference/runtime-migration-kb.md): the knowledge base `SKILL.md` refers to for deprecation/EOL dates and breaking changes
+
+You don't need to upload the `mcp-server/` subfolder. It's only for deploying (step 1).
 
 With the skill loaded, the agent:
 

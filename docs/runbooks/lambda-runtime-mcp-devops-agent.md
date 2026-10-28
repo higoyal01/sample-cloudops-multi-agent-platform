@@ -33,7 +33,7 @@ The tool Lambda does the heavy work server-side: parallel region discovery, depr
 
 > Prefer not to use Terraform? The same MCP server, including the DevOps Agent
 > IAM role from section 5, can be deployed as a single CloudFormation stack.
-> See [`deploy/mcp/cfn/lambda-runtime`](../../deploy/mcp/cfn/lambda-runtime/README.md).
+> See [`skills/lambda-runtime-upgrade/mcp-server`](../../skills/lambda-runtime-upgrade/mcp-server/README.md).
 > The template and the prebuilt Lambda zip are both in that folder.
 > Then continue at section 6.
 

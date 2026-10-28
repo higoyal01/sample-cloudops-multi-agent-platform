@@ -72,7 +72,7 @@ Do you run the full CloudOps platform (chat UI, supervisor, other agents)?
 | Mode | What you deploy | How |
 |------|-----------------|-----|
 | **1. Platform** | Full stack. `lambda-upgrade-agent` is a worker under `ops-excellence-agent`. | `make deploy-auto` |
-| **2. Standalone MCP server** | Gateway + tool Lambda only | CloudFormation: [`deploy/mcp/cfn/lambda-runtime/`](../../deploy/mcp/cfn/lambda-runtime/README.md) (template + prebuilt zip, nothing to build). Terraform alternative: `DEPLOY_MODE=gateway-only DEPLOY_TOOLS=lambda-runtime make deploy-auto` |
+| **2. Standalone MCP server** | Gateway + tool Lambda only | CloudFormation: [`skills/lambda-runtime-upgrade/mcp-server/`](../../skills/lambda-runtime-upgrade/mcp-server/README.md) (template + prebuilt zip, nothing to build). Terraform alternative: `DEPLOY_MODE=gateway-only DEPLOY_TOOLS=lambda-runtime make deploy-auto` |
 | **3. Skill + MCP in AWS DevOps Agent** | Mode 2, plus the MCP server registered in DevOps Agent with SigV4 auth, plus the [`skills/lambda-runtime-upgrade/`](../../skills/lambda-runtime-upgrade/SKILL.md) skill added to the Agent Space | [Runbook](../runbooks/lambda-runtime-mcp-devops-agent.md); summary in the [root README](../../README.md#lambda-runtime-upgrade-with-aws-devops-agent-skill--mcp) |
 
 In Mode 3, the skill matters as much as the MCP server. DevOps Agent has no shell,

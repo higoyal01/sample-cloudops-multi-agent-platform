@@ -2,7 +2,7 @@
 """
 Build a console-only deployment package for the Lambda Runtime Upgrade MCP server.
 
-Writes into deploy/mcp/cfn/lambda-runtime/ (checked in, a complete deploy kit):
+Writes into skills/lambda-runtime-upgrade/mcp-server/ (checked in, a complete deploy kit):
   lambda-runtime-mcp.yaml   CloudFormation template (gateway, target with full
                             8-tool schema, tool Lambda, IAM roles, log group,
                             optional DevOps Agent invoke role)
@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOLS_JSON = ROOT / "src" / "lambda" / "mcp" / "tools.json"
 TOOL_DIR = ROOT / "src" / "lambda" / "mcp" / "lambda-runtime"
 SHARED_DIR = ROOT / "src" / "lambda" / "mcp" / "shared"
-OUT_DIR = ROOT / "deploy" / "mcp" / "cfn" / "lambda-runtime"
+OUT_DIR = ROOT / "skills" / "lambda-runtime-upgrade" / "mcp-server"
 TEMPLATE_NAME = "lambda-runtime-mcp.yaml"
 ZIP_NAME = "lambda-runtime-tool.zip"
 TOOL_KEY = "lambda-runtime"
