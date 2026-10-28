@@ -293,9 +293,9 @@ package: $(HASH_DIR) ## Package Lambda tools (only changed ones, parallel)
 # ---------------------------------------------------------------------------
 # Standalone CloudFormation package -- Lambda Runtime Upgrade MCP server
 # ---------------------------------------------------------------------------
-cfn-mcp-package: ## Regenerate Lambda Runtime MCP CFN template + zip in deploy/mcp/cfn/lambda-runtime
+cfn-mcp-package: ## Regenerate Lambda Runtime MCP CFN template + zip in skills/lambda-runtime-upgrade/mcp-server
 	@$(PYTHON) scripts/build_cfn_mcp_package.py
-cfn-mcp-check: ## Fail if deploy/mcp/cfn/lambda-runtime is stale vs. tool source
+cfn-mcp-check: ## Fail if skills/lambda-runtime-upgrade/mcp-server is stale vs. tool source
 	@$(PYTHON) scripts/build_cfn_mcp_package.py --check
 # ---------------------------------------------------------------------------
 # Cleanup

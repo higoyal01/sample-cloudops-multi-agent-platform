@@ -186,6 +186,8 @@ Ships with the skill in the `reference/` folder. **Read it when you need it — 
 |------|--------------|
 | `reference/runtime-migration-kb.md` | Before classifying runtimes (Path A must map status manually) and before analyzing code. Authoritative deprecation/EOL dates, upgrade targets, and per-family breaking changes for Python, Node.js, Java, .NET, Ruby, and custom runtimes. |
 
+**Deployment asset (not for reading during a task):** `mcp-server/` holds a CloudFormation template and a prebuilt Lambda zip that deploy the MCP tools Path M uses. If the user has no `lambda-runtime` tools and wants Path M, point them to `mcp-server/README.md`. Don't load the YAML or the zip into context.
+
 ## Output Template
 
 ```markdown

@@ -1,6 +1,6 @@
 """Guard the checked-in Lambda Runtime MCP CloudFormation kit.
 
-deploy/mcp/cfn/lambda-runtime/ ships a generated template and a prebuilt
+skills/lambda-runtime-upgrade/mcp-server/ ships a generated template and a prebuilt
 Lambda zip so users can deploy without building anything. These tests fail
 when either artifact drifts from src/lambda/mcp (fix: `make cfn-mcp-package`
 and commit), and pin the security-relevant shape of the template.
