@@ -74,6 +74,25 @@ tf_output() {
   echo "$raw" | sed '/^$/d; /^Warning:/d; /^│/d; /^╷/d; /^╵/d; /^The parameter/d; /instead\./d' | head -1
 }
 
+# tf_output_json — compact JSON for an object/list output, "" when the output
+# is absent or null. Same warning-stripping as tf_output; the first line that
+# opens a JSON value starts the document.
+tf_output_json() {
+  terraform -chdir="$TERRAFORM_DIR" output -no-color -json "$1" 2>/dev/null | .venv/bin/python -c '
+import json, sys
+lines = sys.stdin.read().splitlines()
+start = next((i for i, l in enumerate(lines) if l[:1] in "{[\"" or l.strip() == "null"), None)
+if start is None:
+    sys.exit(0)
+try:
+    value = json.loads("\n".join(lines[start:]))
+except ValueError:
+    sys.exit(0)
+if value is not None:
+    print(json.dumps(value, separators=(",", ":"), sort_keys=True))
+' 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------------------
 # Prerequisites Check
 # ---------------------------------------------------------------------------

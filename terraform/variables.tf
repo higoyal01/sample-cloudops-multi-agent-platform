@@ -295,6 +295,10 @@ variable "devops_agent_space_id" {
     condition     = !var.devops_agent_integration_enabled || var.devops_agent_space_id != ""
     error_message = "devops_agent_space_id is required when devops_agent_integration_enabled is true."
   }
+  validation {
+    condition     = !var.devops_agent_mcp_enabled || var.devops_agent_space_id != ""
+    error_message = "devops_agent_space_id is required when devops_agent_mcp_enabled is true."
+  }
 }
 
 variable "devops_agent_space_region" {
@@ -367,6 +371,37 @@ variable "devops_agent_coverage_cache_ttl_seconds" {
   validation {
     condition     = var.devops_agent_coverage_cache_ttl_seconds >= 0
     error_message = "devops_agent_coverage_cache_ttl_seconds cannot be negative."
+  }
+}
+
+variable "devops_agent_mcp_enabled" {
+  description = <<-EOT
+    Expose gateway tools to AWS DevOps Agent. Creates the IAM role DevOps Agent
+    assumes to call the gateway; the post-apply sync then registers the gateway
+    as a SigV4 MCP server, associates the tools in devops_agent_mcp_tools with
+    devops_agent_space_id, and uploads the matching skill. Off by default.
+  EOT
+  type        = bool
+  default     = false
+
+  validation {
+    # DevOps Agent signs MCP calls with SigV4, which only the AWS_IAM
+    # authorizer accepts. The oauth (CUSTOM_JWT) gateway would reject them.
+    condition     = !var.devops_agent_mcp_enabled || var.gateway_auth == "iam"
+    error_message = "devops_agent_mcp_enabled requires gateway_auth = \"iam\" (DevOps Agent calls the gateway with SigV4)."
+  }
+}
+
+variable "devops_agent_mcp_tools" {
+  description = "tools.json target keys whose tools are allowlisted for DevOps Agent (e.g. [\"lambda-runtime\"])."
+  type        = list(string)
+  default     = ["lambda-runtime"]
+
+  validation {
+    condition = length(var.devops_agent_mcp_tools) > 0 && alltrue([
+      for t in var.devops_agent_mcp_tools : can(regex("^[a-z0-9-]+$", t))
+    ])
+    error_message = "devops_agent_mcp_tools must be a non-empty list of tools.json target keys (lowercase letters, digits, hyphens)."
   }
 }
 

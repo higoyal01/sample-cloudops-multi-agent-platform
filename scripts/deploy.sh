@@ -176,6 +176,15 @@ for _k in $_SHARED_KEYS; do
   _cli_value="${!_cli_var:-}"
   [ -z "$_cli_value" ] && continue
   _tf_name=$(echo "$_k" | tr '[:upper:]' '[:lower:]')
+  case "$_k" in
+    # List-typed root variables: accept CSV on the CLI and hand Terraform an
+    # HCL list (a bare CSV string fails type checking). Values are tools.json
+    # keys; the variable's validation rejects anything else.
+    DEVOPS_AGENT_MCP_TOOLS)
+      _cli_value=$(printf '%s' "$_cli_value" | tr -d ' ')
+      _cli_value="[\"${_cli_value//,/\",\"}\"]"
+      ;;
+  esac
   TF_CLI_OVERRIDES+=("-var=${_tf_name}=${_cli_value}")
 done
 unset _k _cli_var _cli_value _tf_name
@@ -256,6 +265,7 @@ main() {
   fi
 
   if [ "$DESTROY" = true ]; then
+    cleanup_devops_agent_mcp
     run_terraform destroy
     exit 0
   fi
@@ -349,6 +359,10 @@ main() {
     fi
     if [ "$DEPLOY_FLAG_GATEWAY" = true ] && [ "$DEPLOY_FLAG_TOOLS" = true ]; then
       sync_gateway_tools
+      # No-op unless devops_agent_mcp_enabled (reads the devops_agent_mcp
+      # output, null when off). Runs here, not in post_deploy_sync, so it
+      # also covers gateway-only deploys.
+      sync_devops_agent_mcp
     fi
 
     # Update .env.local from Terraform outputs and rebuild if env vars changed

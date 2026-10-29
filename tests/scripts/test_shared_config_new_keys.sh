@@ -201,6 +201,48 @@ PY
 )
 assert_eq "$(echo "$RESULT" | sed -n '1p')" '{"CROSS_ACCOUNT_ROLE_ARN": "arn:aws:iam::777777777777:role/PayerReader", "CROSS_ACCOUNT_ROLE_ARN_COH": "arn:aws:iam::888888888888:role/COHReader"}' "commitments receives both payer roles"
 assert_eq "$(echo "$RESULT" | sed -n '2p')" "arn:aws:iam::777777777777:role/PayerReader" "cost-explorer still receives the payer role"
+# -----------------------------------------------------------------------------
+# Test 5: DevOps Agent MCP access keys round-trip — the bool lands as a JSON
+# bool and the CSV tool list as a list (the root variable is list(string)).
+# -----------------------------------------------------------------------------
+ANS_DEVOPS_AGENT_MCP_ENABLED="true"
+ANS_DEVOPS_AGENT_MCP_TOOLS="lambda-runtime, cost-explorer"
+export ANS_DEVOPS_AGENT_MCP_ENABLED ANS_DEVOPS_AGENT_MCP_TOOLS
+shared_config_write_tfvars
+RESULT=$(.venv/bin/python - <<'PY'
+import json
+d = json.load(open("terraform/config.auto.tfvars.json"))
+print(json.dumps(d.get("devops_agent_mcp_enabled")))
+print(json.dumps(d.get("devops_agent_mcp_tools", "MISSING")))
+print(d.get("devops_agent_space_id", ""))
+PY
+)
+assert_eq "$(echo "$RESULT" | sed -n '1p')" "true" "write_tfvars writes devops_agent_mcp_enabled as a bool"
+assert_eq "$(echo "$RESULT" | sed -n '2p')" '["lambda-runtime", "cost-explorer"]' "write_tfvars splits devops_agent_mcp_tools CSV into a list"
+assert_eq "$(echo "$RESULT" | sed -n '3p')" "space-123" "Agent Space ID shared with the investigation integration is kept"
+# Turning it off writes false; an empty tool list drops the key so the
+# variable default (["lambda-runtime"]) applies instead of an invalid [].
+ANS_DEVOPS_AGENT_MCP_ENABLED="false"
+ANS_DEVOPS_AGENT_MCP_TOOLS=""
+export ANS_DEVOPS_AGENT_MCP_ENABLED ANS_DEVOPS_AGENT_MCP_TOOLS
+shared_config_write_tfvars
+RESULT=$(.venv/bin/python - <<'PY'
+import json
+d = json.load(open("terraform/config.auto.tfvars.json"))
+print(json.dumps(d.get("devops_agent_mcp_enabled")))
+print(json.dumps(d.get("devops_agent_mcp_tools", "MISSING")))
+PY
+)
+assert_eq "$(echo "$RESULT" | sed -n '1p')" "false" "write_tfvars writes devops_agent_mcp_enabled=false"
+assert_eq "$(echo "$RESULT" | sed -n '2p')" '"MISSING"' "empty tool list falls back to the variable default"
+# Both keys must be registered as shared keys so CLI overrides reach Terraform.
+TESTS_RUN=$((TESTS_RUN + 1))
+if grep -qx "DEVOPS_AGENT_MCP_ENABLED" scripts/shared-keys.txt && grep -qx "DEVOPS_AGENT_MCP_TOOLS" scripts/shared-keys.txt; then
+  printf "  PASS  %s\n" "both keys listed in scripts/shared-keys.txt"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  printf "  FAIL  %s\n" "both keys listed in scripts/shared-keys.txt"
+fi
 
 echo
 echo "----------------------------------------"

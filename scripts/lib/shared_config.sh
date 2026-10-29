@@ -250,6 +250,7 @@ for ans_key, tf_key in _ANSWER_TO_TFVAR.items():
 for ans_key, tf_key in {
     "DEVOPS_AGENT_INTEGRATION_ENABLED":      "devops_agent_integration_enabled",
     "DEVOPS_AGENT_HEALTH_AUTOMATIC_ENABLED": "devops_agent_health_automatic_enabled",
+    "DEVOPS_AGENT_MCP_ENABLED":              "devops_agent_mcp_enabled",
 }.items():
     if ans_key in answers:
         existing[tf_key] = answers[ans_key].lower() == "true"
@@ -285,6 +286,16 @@ if "CROSS_ACCOUNT_NETWORK_RESILIENCE_ROLE_ARNS" in answers:
     existing["network_resilience_cross_account_role_arns"] = (
         [a.strip() for a in val.split(",") if a.strip()] if val else []
     )
+
+# devops_agent_mcp_tools is list(string) at the root, CSV in the prompt answer.
+# An empty answer drops the key so the variable default (["lambda-runtime"])
+# applies — an empty list would fail the variable's validation.
+if "DEVOPS_AGENT_MCP_TOOLS" in answers:
+    tools = [t.strip() for t in answers["DEVOPS_AGENT_MCP_TOOLS"].split(",") if t.strip()]
+    if tools:
+        existing["devops_agent_mcp_tools"] = tools
+    else:
+        existing.pop("devops_agent_mcp_tools", None)
 
 # selected_agents / selected_tools — CSV when user picked "custom", omitted
 # entirely when they picked "all". Empty list IS NOT the same as "all" in

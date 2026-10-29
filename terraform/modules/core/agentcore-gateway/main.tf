@@ -112,3 +112,51 @@ resource "aws_bedrockagentcore_gateway_target" "lambda_tools" {
     }
   }
 }
+
+# -----------------------------------------------------------------------------
+# AWS DevOps Agent access (opt-in) — the role DevOps Agent assumes to SigV4-sign
+# MCP calls to this gateway. Trusted only by aidevops.amazonaws.com from this
+# account (the Agent Space is assumed to live in the deploy account, as the
+# devops-agent-integration module also assumes). Do NOT add an aws:SourceArn
+# condition: DevOps Agent's SigV4 MCP registration fails with "Invalid STS role
+# configuration for session sigv4McpServerSession" when one is present.
+# -----------------------------------------------------------------------------
+resource "aws_iam_role" "devops_agent_invoke" {
+  count = var.devops_agent_mcp_enabled ? 1 : 0
+  name  = "${var.project_tag}-devops-agent-gateway-invoke"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = { Service = "aidevops.amazonaws.com" }
+        Action    = "sts:AssumeRole"
+        Condition = {
+          StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id }
+        }
+      }
+    ]
+  })
+
+  tags = merge(local.common_tags, {
+    Name = "${var.project_tag}-devops-agent-gateway-invoke"
+  })
+}
+
+resource "aws_iam_role_policy" "devops_agent_invoke" {
+  count = var.devops_agent_mcp_enabled ? 1 : 0
+  name  = "${var.project_tag}-devops-agent-gateway-invoke"
+  role  = aws_iam_role.devops_agent_invoke[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "bedrock-agentcore:InvokeGateway"
+        Resource = aws_bedrockagentcore_gateway.this.gateway_arn
+      }
+    ]
+  })
+}

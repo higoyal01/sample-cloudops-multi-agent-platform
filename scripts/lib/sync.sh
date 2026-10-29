@@ -638,3 +638,360 @@ if sync_failed:
     rm -f "$hash_file"
   fi
 }
+
+# ---------------------------------------------------------------------------
+# AWS DevOps Agent MCP access — register the gateway as a SigV4 MCP server,
+# allowlist the selected tools in an Agent Space, upload the matching skill.
+#
+# Opt-in via devops_agent_mcp_enabled. Terraform creates only the IAM role
+# DevOps Agent assumes (agentcore-gateway module); the AWS provider has no
+# DevOps Agent resources, so the rest runs here post-apply, like the schema
+# sync above. Inputs come from the `devops_agent_mcp` Terraform output, which
+# is null when the feature is off.
+#
+# Idempotent: an existing registration with the same name is reused when its
+# endpoint/role match (replaced when they don't), the association is only
+# rewritten when the tool list changed, and the skill upload is hash-skipped
+# via .lambda-hashes/devops-agent-skill.sha. Every failure is a warning — a
+# DevOps Agent problem must never fail the platform deploy.
+#
+# .lambda-hashes/devops-agent-mcp.json records what this workstation
+# registered, so turning the feature off (or a destroy without Terraform
+# outputs) can still deregister it.
+# ---------------------------------------------------------------------------
+_devops_agent_mcp_py() {
+  # $1 = sync | cleanup, $2 = JSON config. Values reach Python through the
+  # environment and a quoted heredoc, never by interpolation into code.
+  DEVOPS_MCP_CONFIG="$2" \
+  DEVOPS_MCP_TOOLS_JSON="src/lambda/mcp/tools.json" \
+  DEVOPS_MCP_SKILLS_DIR="skills" \
+  DEVOPS_MCP_SKILL_HASH_FILE="${HASH_DIR}/devops-agent-skill.sha" \
+  DEVOPS_MCP_STATE_FILE="${HASH_DIR}/devops-agent-mcp.json" \
+  .venv/bin/python - "$1" <<'PY'
+import hashlib
+import io
+import json
+import os
+import re
+import sys
+import time
+import zipfile
+
+import boto3
+
+MODE = sys.argv[1]
+CFG = json.loads(os.environ["DEVOPS_MCP_CONFIG"])
+SERVICE_TYPE = "mcpserversigv4"
+SIGV4_SERVICE = "bedrock-agentcore"
+# tools.json target -> skill folder under skills/ uploaded with its tools.
+TARGET_SKILLS = {"lambda-runtime": "lambda-runtime-upgrade"}
+# DevOps Agent skill zips carry SKILL.md plus these optional folders; a
+# scripts/ folder is rejected by the service, so it is never packaged.
+SKILL_DIRS = ("reference", "references", "assets")
+MAX_SKILL_BYTES = 6 * 1024 * 1024
+
+
+def say(message):
+    print(f"  {message}", flush=True)
+
+
+def paged(call, key, **kwargs):
+    # boto3 does not follow nextToken for these operations; drain it.
+    token = None
+    while True:
+        if token:
+            kwargs["nextToken"] = token
+        resp = call(**kwargs)
+        yield from resp.get(key) or []
+        token = resp.get("nextToken")
+        if not token:
+            return
+
+
+def error_code(exc):
+    return (getattr(exc, "response", None) or {}).get("Error", {}).get("Code", "")
+
+
+try:
+    client = boto3.client("devops-agent", region_name=CFG["space_region"])
+except Exception as exc:  # e.g. botocore too old to know the service
+    say(f"cannot create a devops-agent client ({exc}); run `make setup` to update boto3")
+    sys.exit(1)
+
+
+def find_services(name):
+    found = []
+    for svc in paged(client.list_services, "services", filterServiceType=SERVICE_TYPE):
+        if svc.get("serviceType") != SERVICE_TYPE:
+            continue
+        details = (svc.get("additionalServiceDetails") or {}).get(SERVICE_TYPE) or {}
+        if name in (svc.get("name"), details.get("name")):
+            found.append((svc["serviceId"], details))
+    return found
+
+
+def associations_for(service_id):
+    return [
+        a
+        for a in paged(
+            client.list_associations,
+            "associations",
+            agentSpaceId=CFG["space_id"],
+            filterServiceTypes=SERVICE_TYPE,
+        )
+        if a.get("serviceId") == service_id
+    ]
+
+
+def remove_service(service_id):
+    for assoc in associations_for(service_id):
+        client.disassociate_service(
+            agentSpaceId=CFG["space_id"], associationId=assoc["associationId"]
+        )
+        say(f"disassociated {service_id} from Agent Space {CFG['space_id']}")
+    client.deregister_service(serviceId=service_id)
+    say(f"deregistered {service_id}")
+
+
+def registration_matches(details):
+    role = details.get("mcpRoleArn") or details.get("roleArn")
+    return (
+        details.get("endpoint") == CFG["gateway_endpoint"]
+        and details.get("region") == CFG["gateway_region"]
+        and details.get("service") == SIGV4_SERVICE
+        and role == CFG["role_arn"]
+    )
+
+
+def register():
+    name = CFG["service_name"]
+    details = {
+        "name": name,
+        "endpoint": CFG["gateway_endpoint"],
+        "description": f"CloudOps AgentCore gateway {name} (SigV4)",
+        "authorizationConfig": {
+            "region": CFG["gateway_region"],
+            "service": SIGV4_SERVICE,
+            # roleArn is deprecated in the DevOps Agent API; mcpRoleArn replaces it.
+            "mcpRoleArn": CFG["role_arn"],
+        },
+    }
+    # DevOps Agent assumes the role and calls tools/list while registering.
+    # The role is seconds old after `terraform apply`, so give IAM time.
+    delays = [
+        int(d)
+        for d in os.environ.get("DEVOPS_MCP_RETRY_DELAYS", "15,30,45").split(",")
+        if d.strip()
+    ]
+    for attempt in range(len(delays) + 1):
+        try:
+            return client.register_service(
+                service=SERVICE_TYPE, name=name, serviceDetails={SERVICE_TYPE: details}
+            )
+        except Exception as exc:
+            retriable = error_code(exc) in (
+                "ValidationException",
+                "InvalidParameterException",
+                "AccessDeniedException",
+            ) and re.search(r"sts|role|assume", str(exc), re.I)
+            if not retriable or attempt == len(delays):
+                raise
+            say(f"registration not ready yet ({error_code(exc)}), retrying in {delays[attempt]}s")
+            time.sleep(delays[attempt])
+
+
+def wanted_tool_names():
+    with open(os.environ["DEVOPS_MCP_TOOLS_JSON"]) as handle:
+        tools_cfg = json.load(handle)
+    for target in CFG.get("missing_tools") or []:
+        say(f"{target}: not deployed on this gateway, not exposed (include it in DEPLOY_TOOLS)")
+    names, targets = [], []
+    for target in CFG.get("tools") or []:
+        schemas = (tools_cfg.get(target) or {}).get("tools") or []
+        if not schemas:
+            say(f"{target}: no tool schemas in tools.json, skipping")
+            continue
+        targets.append(target)
+        # The gateway exposes each tool as <target>___<tool name>.
+        names.extend(f"{target}___{tool['name']}" for tool in schemas)
+    return targets, names
+
+
+def skill_bundle(folder):
+    root = os.path.join(os.environ["DEVOPS_MCP_SKILLS_DIR"], folder)
+    skill_md = os.path.join(root, "SKILL.md")
+    with open(skill_md) as handle:
+        match = re.search(r"^name:\s*[\"']?([a-z0-9-]+)", handle.read(), re.M)
+    if not match:
+        raise ValueError(f"{skill_md} has no frontmatter name")
+    files = [("SKILL.md", skill_md)]
+    for sub in SKILL_DIRS:
+        for dirpath, dirnames, filenames in os.walk(os.path.join(root, sub)):
+            dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d != "__pycache__")
+            for fname in sorted(filenames):
+                if not fname.startswith("."):
+                    full = os.path.join(dirpath, fname)
+                    files.append((os.path.relpath(full, root).replace(os.sep, "/"), full))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
+        for rel, full in sorted(files):
+            # Fixed timestamp + mode keep the zip, and so its hash, reproducible.
+            info = zipfile.ZipInfo(rel, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            with open(full, "rb") as handle:
+                archive.writestr(info, handle.read())
+    data = buf.getvalue()
+    if len(data) > MAX_SKILL_BYTES:
+        raise ValueError(f"{folder} skill zip is {len(data)} bytes, over the 6 MB limit")
+    return match.group(1), data
+
+
+def sync_skills(targets):
+    bundles = [skill_bundle(TARGET_SKILLS[t]) for t in targets if t in TARGET_SKILLS]
+    if not bundles:
+        return
+    digest = hashlib.sha256(CFG["space_id"].encode())
+    for name, data in bundles:
+        digest.update(name.encode() + b"\0" + data)
+    current = digest.hexdigest()
+    hash_file = os.environ["DEVOPS_MCP_SKILL_HASH_FILE"]
+    try:
+        with open(hash_file) as handle:
+            if handle.read().strip() == current:
+                say("skills unchanged, skipping upload")
+                return
+    except FileNotFoundError:
+        pass
+    existing = {
+        (asset.get("metadata") or {}).get("name"): asset["assetId"]
+        for asset in paged(
+            client.list_assets, "items", agentSpaceId=CFG["space_id"], assetType="skill"
+        )
+    }
+    for name, data in bundles:
+        token = f"{name}-{hashlib.sha256(data).hexdigest()[:40]}"
+        content = {"zip": {"zipFile": data}}
+        if name in existing:
+            # No metadata: PATCH semantics keep the status and agent types a
+            # user may have changed in the Agent Space.
+            client.update_asset(
+                agentSpaceId=CFG["space_id"], assetId=existing[name], content=content, clientToken=token
+            )
+            say(f"skill {name}: updated")
+        else:
+            client.create_asset(
+                agentSpaceId=CFG["space_id"],
+                assetType="skill",
+                # name/description come from the SKILL.md frontmatter for zips.
+                metadata={"agent_types": ["GENERIC"]},
+                content=content,
+                clientToken=token,
+            )
+            say(f"skill {name}: created")
+    with open(hash_file, "w") as handle:
+        handle.write(current + "\n")
+
+
+def write_state():
+    state = {k: CFG[k] for k in ("service_name", "space_id", "space_region")}
+    with open(os.environ["DEVOPS_MCP_STATE_FILE"], "w") as handle:
+        json.dump(state, handle, sort_keys=True)
+
+
+def sync():
+    targets, names = wanted_tool_names()
+    if not names:
+        say("no tools to expose; nothing registered")
+        return 1
+
+    service_id = None
+    found = find_services(CFG["service_name"])
+    for candidate, details in found:
+        if service_id is None and registration_matches(details):
+            service_id = candidate
+            say(f"registration {CFG['service_name']}: unchanged ({candidate})")
+        elif service_id is None:
+            say(f"registration {candidate}: endpoint or role changed, replacing")
+            remove_service(candidate)
+        else:
+            say(f"registration {candidate}: duplicate name, removing")
+            remove_service(candidate)
+    if service_id is None:
+        resp = register()
+        service_id = resp["serviceId"]
+        say(f"registration {CFG['service_name']}: created ({service_id})")
+        step = resp.get("additionalStep")
+        if step:
+            write_state()
+            say(f"ACTION REQUIRED to finish registration: {json.dumps(step)}")
+            say("re-run `make deploy-auto` afterwards to attach the tools")
+            return 0
+    write_state()
+
+    assoc = associations_for(service_id)
+    current = None
+    if assoc:
+        current = ((assoc[0].get("configuration") or {}).get(SERVICE_TYPE) or {}).get("tools")
+    if current is not None and sorted(current) == sorted(names):
+        say(f"association: unchanged ({len(names)} tools)")
+    else:
+        # AssociateService overwrites any existing association of this service.
+        client.associate_service(
+            agentSpaceId=CFG["space_id"],
+            serviceId=service_id,
+            configuration={SERVICE_TYPE: {"tools": names}},
+        )
+        say(f"association: {len(names)} tools allowed in Agent Space {CFG['space_id']}")
+
+    sync_skills(targets)
+    return 0
+
+
+def cleanup():
+    found = find_services(CFG["service_name"])
+    if not found:
+        say(f"no DevOps Agent registration named {CFG['service_name']}")
+        return 0
+    for service_id, _ in found:
+        remove_service(service_id)
+    say("uploaded skills are left in the Agent Space (they may have been edited there)")
+    return 0
+
+
+try:
+    sys.exit(sync() if MODE == "sync" else cleanup())
+except Exception as exc:
+    say(f"DevOps Agent {MODE} failed: {error_code(exc) or type(exc).__name__}: {exc}")
+    sys.exit(1)
+PY
+}
+
+sync_devops_agent_mcp() {
+  local state_file="${HASH_DIR}/devops-agent-mcp.json"
+  local skill_hash_file="${HASH_DIR}/devops-agent-skill.sha"
+  local config
+  config=$(tf_output_json devops_agent_mcp)
+
+  if [ -z "$config" ]; then
+    # Feature off. If this workstation registered the gateway earlier, the
+    # apply that just ran removed the role DevOps Agent assumes, so remove the
+    # registration too instead of leaving it pointing at a deleted role.
+    if [ -f "$state_file" ]; then
+      info "DevOps Agent MCP access is off; removing the earlier registration..."
+      if _devops_agent_mcp_py cleanup "$(cat "$state_file")" 2>&1; then
+        rm -f "$state_file" "$skill_hash_file"
+      else
+        warn "DevOps Agent MCP cleanup failed (non-fatal)"
+      fi
+    fi
+    return 0
+  fi
+
+  mkdir -p "$HASH_DIR"
+  info "Syncing gateway tools to AWS DevOps Agent..."
+  if ! _devops_agent_mcp_py sync "$config" 2>&1; then
+    warn "DevOps Agent MCP sync failed (non-fatal)"
+    rm -f "$skill_hash_file"
+  fi
+}

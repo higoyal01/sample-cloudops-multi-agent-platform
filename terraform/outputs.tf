@@ -104,3 +104,24 @@ output "devops_agent_investigations_table_name" {
   description = "Generic DevOps Agent investigations table name."
   value       = try(module.devops_agent_integration[0].table_name, "")
 }
+
+# AWS DevOps Agent MCP access (opt-in). Both outputs are null when
+# devops_agent_mcp_enabled = false, so they add no state or plan diff.
+output "devops_agent_gateway_role_arn" {
+  description = "IAM role AWS DevOps Agent assumes to SigV4-sign MCP calls to the gateway (null when disabled)."
+  value       = try(module.agentcore_gateway[0].devops_agent_gateway_role_arn, null)
+}
+
+output "devops_agent_mcp" {
+  description = "Inputs for scripts/lib/sync.sh::sync_devops_agent_mcp (null when disabled). tools is limited to targets actually deployed on the gateway; missing_tools lists requested targets that are not."
+  value = var.devops_agent_mcp_enabled && var.deploy_gateway ? {
+    service_name     = "${var.project_tag}-${var.environment_tag}-gateway"
+    role_arn         = try(module.agentcore_gateway[0].devops_agent_gateway_role_arn, null)
+    gateway_endpoint = local.gateway_endpoint
+    gateway_region   = var.aws_region
+    space_id         = var.devops_agent_space_id
+    space_region     = var.devops_agent_space_region != "" ? var.devops_agent_space_region : var.aws_region
+    tools            = [for t in var.devops_agent_mcp_tools : t if contains(keys(module.lambda_tools), t)]
+    missing_tools    = [for t in var.devops_agent_mcp_tools : t if !contains(keys(module.lambda_tools), t)]
+  } : null
+}

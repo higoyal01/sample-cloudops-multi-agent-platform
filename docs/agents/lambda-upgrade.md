@@ -58,34 +58,21 @@ lower-priority functions).
 ## Deploy modes
 
 In every mode the same read-only tool Lambda (`src/lambda/mcp/lambda-runtime/`) does
-the work behind an AgentCore Gateway (MCP, `AWS_IAM` auth). The modes differ
-in what calls it.
-
-```
-Do you run the full CloudOps platform (chat UI, supervisor, other agents)?
-├── Yes → Mode 1: Platform. lambda-upgrade-agent under ops-excellence.
-└── No
-    ├── Using AWS DevOps Agent? → Mode 3: Skill + MCP in an Agent Space.
-    └── Using Kiro / Claude Code / another MCP client? → Mode 2: Standalone MCP server.
-```
+the work behind the platform's AgentCore Gateway (MCP, `AWS_IAM` auth). The modes
+differ in what calls it.
 
 | Mode | What you deploy | How |
 |------|-----------------|-----|
 | **1. Platform** | Full stack. `lambda-upgrade-agent` is a worker under `ops-excellence-agent`. | `make deploy-auto` |
-| **2. Standalone MCP server** | Gateway + tool Lambda only | CloudFormation: [`skills/lambda-runtime-upgrade/mcp-server/`](../../skills/lambda-runtime-upgrade/mcp-server/README.md) (template + prebuilt zip, nothing to build). Terraform alternative: `DEPLOY_MODE=gateway-only DEPLOY_TOOLS=lambda-runtime make deploy-auto` |
-| **3. Skill + MCP in AWS DevOps Agent** | Mode 2, plus the MCP server registered in DevOps Agent with SigV4 auth, plus the [`skills/lambda-runtime-upgrade/`](../../skills/lambda-runtime-upgrade/SKILL.md) skill added to the Agent Space | [Runbook](../runbooks/lambda-runtime-mcp-devops-agent.md); summary in the [root README](../../README.md#lambda-runtime-upgrade-with-aws-devops-agent-skill--mcp) |
+| **2. Gateway only** | Gateway + tool Lambda, for Kiro, Claude Code or another MCP client | `DEPLOY_MODE=gateway-only DEPLOY_TOOLS=lambda-runtime make deploy-auto` with a fresh `PROJECT_PREFIX` |
+| **3. AWS DevOps Agent** | Mode 1 or 2 with `DEVOPS_AGENT_MCP_ENABLED=true`: the deploy registers the gateway in DevOps Agent, allowlists the tools and uploads the skill | [Use with AWS DevOps Agent](#use-with-aws-devops-agent) |
 
-In Mode 3, the skill matters as much as the MCP server. DevOps Agent has no shell,
+In Mode 3, the skill matters as much as the tools. DevOps Agent has no shell,
 so it can't open the presigned URL `lambda:GetFunction` returns. The skill tells it
 to read source from the tool response's `source_files` instead, and to say so when the
-tools aren't in its tool list. The skill must ship with
+tools aren't in its tool list. The skill ships with
 `reference/runtime-migration-kb.md`, which it checks deprecation dates and
 breaking changes against.
-
-The CloudFormation stack can also create the IAM role DevOps Agent assumes
-(`CreateDevOpsAgentRole=true`). That role trusts `aidevops.amazonaws.com`,
-scoped by `aws:SourceAccount`, and can call only `bedrock-agentcore:InvokeGateway`
-on this gateway.
 
 ## Prerequisites
 
@@ -97,8 +84,7 @@ No special setup beyond the deploy itself. The tool Lambda's role needs:
 - `cloudwatch:GetMetricData`: days since last invocation (deletion-candidate detection)
 
 For cross-account scanning, create a role with the permissions above in the target
-account, then set `CROSS_ACCOUNT_ROLE_ARN` (platform, via `make configure`) or
-the `CrossAccountRoleArn` stack parameter (CloudFormation).
+account, then set `CROSS_ACCOUNT_ROLE_ARN` via `make configure`.
 
 ## Speed Optimizations
 
@@ -174,8 +160,128 @@ The agent targets 5-10 minute report generation through:
 | `get_function_code` returns empty files | Function uses container image packaging (`PackageType: Image`) | Container images can't be downloaded via GetFunction. Check `package_type` in config first. |
 | Code extraction hits size limit | Large deployment package with bundled deps | Use `include_patterns` param to target specific files, or increase `max_file_size_kb`. |
 | Cross-account functions not listed | Missing IAM permissions in target account | Ensure the cross-account role has `lambda:ListFunctions` + `lambda:GetFunction` + `ec2:DescribeRegions`. |
-| Runtime shows "unknown" | New runtime not yet in the support data table | Update `RUNTIME_SUPPORT_DATA` in the handler, then run `make cfn-mcp-package` so the CloudFormation zip picks it up. |
-| DevOps Agent says it can't download or unzip source | MCP tools not allowlisted in the Agent Space, or the skill isn't loaded | Add the `lambda-runtime___*` tools to the Agent Space and load the skill (Mode 3). |
-| DevOps Agent registration fails: `Invalid STS role configuration for session sigv4McpServerSession` | Trust policy account doesn't match the Agent Space owner | Use only an `aws:SourceAccount` condition set to the Agent Space account, then wait about 60 s. See the [runbook](../runbooks/lambda-runtime-mcp-devops-agent.md#10-troubleshooting). |
-| `make test` fails on `test_cfn_mcp_package.py` | Tool code or `tools.json` changed without regenerating the CloudFormation kit | `make cfn-mcp-package` and commit the updated YAML and zip. |
+| Runtime shows "unknown" | New runtime not yet in the support data table | Update `RUNTIME_SUPPORT_DATA` in the handler. |
+| DevOps Agent says it can't download or unzip source | MCP tools not allowlisted in the Agent Space, or the skill isn't loaded | See [DevOps Agent troubleshooting](#devops-agent-troubleshooting). |
 | Report takes >10 min | Too many CRITICAL/HIGH functions triggering code download | The agent limits to top 5; if you have more, run a second pass. |
+
+## Use with AWS DevOps Agent
+
+AWS DevOps Agent can call the `lambda-runtime` tools on the platform's own
+AgentCore Gateway and load the `lambda-runtime-upgrade` skill. One flag turns
+it on, and the normal `make` flow does the rest:
+
+```
+AWS DevOps Agent (Agent Space)
+  ├── skill: lambda-runtime-upgrade         uploaded from skills/lambda-runtime-upgrade/
+  └── MCP:   <project>-<env>-gateway        8 lambda-runtime___* tools allowlisted
+        │  SigV4, assumes <project>-devops-agent-gateway-invoke
+        ▼
+AgentCore Gateway (AWS_IAM) ──▶ lambda-runtime tool Lambda (read-only)
+```
+
+DevOps Agent has no shell, so it can't open the presigned URL that
+`lambda:GetFunction` returns or unzip a deployment package. The tool Lambda
+does that server-side and returns source as text, and the skill keeps the
+agent on that path.
+
+### What `make deploy-auto` does when it's enabled
+
+| Step | Where | Result |
+|------|-------|--------|
+| IAM role | Terraform, `modules/core/agentcore-gateway` | `<project>-devops-agent-gateway-invoke`, trusted by `aidevops.amazonaws.com` with `aws:SourceAccount` = the deploy account, allowed only `bedrock-agentcore:InvokeGateway` on this gateway. Output: `devops_agent_gateway_role_arn`. |
+| Registration | post-apply, `sync_devops_agent_mcp` in `scripts/lib/sync.sh` | Gateway registered as a SigV4 MCP server named `<project>-<env>-gateway` (service `bedrock-agentcore`). Reused on later deploys; replaced if the endpoint or role changes. |
+| Tool allowlist | same | Every tool of every target in `DEVOPS_AGENT_MCP_TOOLS` that is deployed on the gateway, as `<target>___<tool>`, associated with the Agent Space. Rewritten only when the list changes. |
+| Skill | same | `skills/lambda-runtime-upgrade/` (`SKILL.md` + `reference/`) uploaded as a `skill` asset for all agent types. Skipped while `.lambda-hashes/devops-agent-skill.sha` matches. |
+
+The AWS Terraform provider has no DevOps Agent resources, so registration
+runs after apply, the same way gateway tool schemas are synced. A DevOps
+Agent failure prints a warning and never fails the deploy; the next deploy
+retries. `make destroy` and `make destroy-all` disassociate and deregister
+the gateway before Terraform removes the role. Turning the flag off and
+redeploying does the same. The uploaded skill stays in the Agent Space in
+both cases, because it may have been edited there.
+
+Settings (shared keys, stored in SSM like the other `DEVOPS_AGENT_*` keys):
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `DEVOPS_AGENT_MCP_ENABLED` | `false` | Create the role and run the sync. Requires `GATEWAY_AUTH=iam`. |
+| `DEVOPS_AGENT_MCP_TOOLS` | `lambda-runtime` | Comma-separated `tools.json` target keys to allowlist. |
+| `DEVOPS_AGENT_SPACE_ID` | (none) | Agent Space to attach to. Required when enabled. Shared with the investigation integration. |
+| `DEVOPS_AGENT_SPACE_REGION` | platform Region | Region of the Agent Space. |
+
+The Agent Space must be in the deploy account. The person deploying needs
+DevOps Agent permissions (`aidevops:ListServices`, `RegisterService`,
+`DeregisterService`, `ListAssociations`, `AssociateService`,
+`DisassociateService`, `ListAssets`, `CreateAsset`, `UpdateAsset`) and
+`iam:PassRole` on the invoke role, on top of the usual deploy permissions.
+
+### Path 1: the platform is already deployed
+
+```bash
+make reconfigure-shared   # "Expose gateway tools to DevOps Agent?" → y, Agent Space ID, tools
+make deploy-auto
+```
+
+The gateway keeps all its other targets. Only the targets in
+`DEVOPS_AGENT_MCP_TOOLS` are allowlisted for DevOps Agent.
+
+### Path 2: no platform, just the gateway and this tool
+
+Use a fresh `PROJECT_PREFIX` in `.env`, then:
+
+```bash
+make setup
+make configure            # Expose gateway tools to DevOps Agent? → y, Agent Space ID
+DEPLOY_MODE=gateway-only DEPLOY_TOOLS=lambda-runtime make deploy-auto
+```
+
+To skip `make configure`, pass the keys per invocation instead:
+`DEVOPS_AGENT_MCP_ENABLED=true DEVOPS_AGENT_SPACE_ID=<space-id>` before the
+same command. Per-invocation values are not saved to `config.auto.tfvars.json`,
+so pass them on every deploy, or the next deploy turns the feature off again.
+
+> **Warning: don't run `DEPLOY_TOOLS=<subset>` against an existing stack with
+> the same prefix.** Terraform deploys exactly the listed tools, so it destroys
+> every other tool Lambda (and tables such as the health-events table) in that
+> stack. Path 2 needs its own `PROJECT_PREFIX`.
+
+### Verify
+
+```bash
+aws devops-agent list-services --region <space-region> \
+  --filter-service-type mcpserversigv4        # shows <project>-<env>-gateway
+aws devops-agent list-assets --region <space-region> \
+  --agent-space-id <space-id> --asset-type skill   # shows lambda-runtime-upgrade
+```
+
+Then ask DevOps Agent in the Agent Space: "Find Lambda functions on deprecated
+runtimes in us-east-1 and generate a migration report." It should call
+`lambda-runtime___generate_upgrade_analysis` and answer with real function
+data. If it talks about shells, `curl`, `unzip` or presigned URLs, the tools
+aren't in its tool list: check `list-associations` for the Agent Space.
+
+### Console fallback
+
+If you can't run the sync (for example, no DevOps Agent permissions for the
+deployer), deploy with the flag on to get the role, then in the DevOps Agent
+console:
+
+1. **Capability Providers → MCP Server → Register**. Endpoint: `terraform output -raw gateway_endpoint`. Authorization: **AWS SigV4**, role `terraform output -raw devops_agent_gateway_role_arn`, Region = gateway Region, service `bedrock-agentcore`.
+2. **Agent Space → Capabilities → MCP Servers → Add**, select the server, allow the `lambda-runtime___*` tools.
+3. **Knowledge → Skills → Upload skill**: a zip of `skills/lambda-runtime-upgrade/` (`SKILL.md` + `reference/`).
+
+The sync deregisters only registrations it can find by its own name, so give
+a manual registration the name `<project>-<env>-gateway` if you want
+`make destroy` to clean it up.
+
+### DevOps Agent troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| `Invalid STS role configuration for session sigv4McpServerSession` | IAM propagation right after the role was created, or the Agent Space is in another account | The sync retries for about 90 s. If it still fails, check the Agent Space is in the deploy account and redeploy. |
+| `DevOps Agent MCP sync failed (non-fatal)` with `AccessDeniedException` | Deployer lacks `aidevops:*` permissions or `iam:PassRole` on the invoke role | Add the permissions listed above, then `make deploy-auto`. |
+| `cannot create a devops-agent client` | boto3 in `.venv` predates the DevOps Agent API | `make setup` to update dependencies. |
+| `<target>: not deployed on this gateway` | A target in `DEVOPS_AGENT_MCP_TOOLS` isn't in this deploy's tool selection | Add it to `DEPLOY_TOOLS` or remove it from `DEVOPS_AGENT_MCP_TOOLS`. |
+| Terraform: `devops_agent_mcp_enabled requires gateway_auth = "iam"` | The gateway uses the OAuth authorizer, which rejects SigV4 | Use `GATEWAY_AUTH=iam` for this stack. |
+| Skill changes don't show up | Upload skipped by hash | `rm .lambda-hashes/devops-agent-skill.sha` and redeploy. |

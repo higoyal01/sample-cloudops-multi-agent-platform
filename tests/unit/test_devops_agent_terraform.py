@@ -208,3 +208,109 @@ def test_core_integration_is_independent_from_health_stream_ingestion():
     assert (
         "var.automatic_health_enabled && var.health_table_stream_arn"
     ) in MODULE
+
+
+# ---------------------------------------------------------------------------
+# DevOps Agent MCP access: the gateway invoke role (opt-in, default off).
+# ---------------------------------------------------------------------------
+GATEWAY_DIR = ROOT / "terraform" / "modules" / "core" / "agentcore-gateway"
+GATEWAY_TF = (GATEWAY_DIR / "main.tf").read_text()
+GATEWAY_VARS = (GATEWAY_DIR / "variables.tf").read_text()
+GATEWAY_OUTPUTS = (GATEWAY_DIR / "outputs.tf").read_text()
+ROOT_VARS = (ROOT / "terraform" / "variables.tf").read_text()
+ROOT_OUTPUTS = (ROOT / "terraform" / "outputs.tf").read_text()
+SHARED_CONFIG_TF = (
+    ROOT / "terraform" / "modules" / "core" / "shared-config" / "main.tf"
+).read_text()
+DEPLOY_SH = (ROOT / "scripts" / "deploy.sh").read_text()
+TEARDOWN_SH = (ROOT / "scripts" / "lib" / "teardown.sh").read_text()
+
+
+def _block(text, header):
+    """Return the HCL block that starts at `header` (brace-matched)."""
+    start = text.index(header)
+    depth = 0
+    for i in range(text.index("{", start), len(text)):
+        depth += {"{": 1, "}": -1}.get(text[i], 0)
+        if depth == 0:
+            return text[start : i + 1]
+    raise AssertionError(f"unterminated block {header!r}")
+
+
+def test_mcp_flag_defaults_off_everywhere():
+    for variables in (GATEWAY_VARS, ROOT_VARS):
+        block = _block(variables, 'variable "devops_agent_mcp_enabled"')
+        assert "default     = false" in block
+    tools = _block(ROOT_VARS, 'variable "devops_agent_mcp_tools"')
+    assert 'default     = ["lambda-runtime"]' in tools
+
+
+def test_invoke_role_exists_only_when_flag_is_on():
+    role = _block(GATEWAY_TF, 'resource "aws_iam_role" "devops_agent_invoke"')
+    policy = _block(GATEWAY_TF, 'resource "aws_iam_role_policy" "devops_agent_invoke"')
+    for block in (role, policy):
+        assert "count = var.devops_agent_mcp_enabled ? 1 : 0" in block
+    assert "devops_agent_mcp_enabled = var.devops_agent_mcp_enabled" in _block(
+        ROOT_TF, 'module "agentcore_gateway"'
+    )
+
+
+def test_invoke_role_trusts_only_devops_agent_from_this_account():
+    role = _block(GATEWAY_TF, 'resource "aws_iam_role" "devops_agent_invoke"')
+    assert 'Principal = { Service = "aidevops.amazonaws.com" }' in role
+    assert '"aws:SourceAccount" = data.aws_caller_identity.current.account_id' in role
+    assert 'Action    = "sts:AssumeRole"' in role
+    # SourceArn breaks DevOps Agent's SigV4 MCP registration (see module comment).
+    assert '"aws:SourceArn"' not in role
+    assert role.count("Principal") == 1
+
+
+def test_invoke_role_can_only_invoke_this_gateway():
+    policy = _block(GATEWAY_TF, 'resource "aws_iam_role_policy" "devops_agent_invoke"')
+    assert 'Action   = "bedrock-agentcore:InvokeGateway"' in policy
+    assert "Resource = aws_bedrockagentcore_gateway.this.gateway_arn" in policy
+    assert policy.count("Effect") == 1
+    assert "*" not in policy.split("policy = jsonencode", 1)[1]
+
+
+def test_mcp_outputs_are_null_when_disabled():
+    assert "try(aws_iam_role.devops_agent_invoke[0].arn, null)" in GATEWAY_OUTPUTS
+    role_out = _block(ROOT_OUTPUTS, 'output "devops_agent_gateway_role_arn"')
+    assert "try(module.agentcore_gateway[0].devops_agent_gateway_role_arn, null)" in role_out
+    mcp_out = _block(ROOT_OUTPUTS, 'output "devops_agent_mcp"')
+    assert "var.devops_agent_mcp_enabled && var.deploy_gateway ? {" in mcp_out
+    assert mcp_out.rstrip("}").rstrip().endswith(": null")
+    # Only targets deployed on this gateway are allowlisted.
+    assert "contains(keys(module.lambda_tools), t)" in mcp_out
+
+
+def test_mcp_requires_agent_space_and_iam_gateway_auth():
+    space = _block(ROOT_VARS, 'variable "devops_agent_space_id"')
+    assert '!var.devops_agent_mcp_enabled || var.devops_agent_space_id != ""' in space
+    enabled = _block(ROOT_VARS, 'variable "devops_agent_mcp_enabled"')
+    assert '!var.devops_agent_mcp_enabled || var.gateway_auth == "iam"' in enabled
+
+
+def test_mcp_ssm_parameters_only_exist_when_enabled():
+    # Flag off must plan zero changes on an existing stack, so the two SSM
+    # parameters are added only while the feature is on.
+    assert "merge(local.base_parameters, local.devops_agent_mcp_parameters)" in SHARED_CONFIG_TF
+    mcp = SHARED_CONFIG_TF.split("devops_agent_mcp_parameters = ", 1)[1].split("base_parameters", 1)[0]
+    assert mcp.startswith("var.devops_agent_mcp_enabled ? {")
+    assert '"devops_agent/mcp_enabled"' in mcp
+    assert '"devops_agent/mcp_tools"' in mcp
+    assert ": {}" in mcp
+
+
+def test_mcp_sync_runs_post_apply_for_gateway_deploys_and_cleans_up_before_destroy():
+    guard = DEPLOY_SH.split(
+        'if [ "$DEPLOY_FLAG_GATEWAY" = true ] && [ "$DEPLOY_FLAG_TOOLS" = true ]; then', 1
+    )[1].split("fi", 1)[0]
+    assert guard.index("sync_gateway_tools") < guard.index("sync_devops_agent_mcp")
+    # Not tied to agents: post_deploy_sync only runs when agents deploy.
+    assert "sync_devops_agent_mcp" not in DEPLOY_SH.split("post_deploy_sync", 1)[0]
+    destroy = DEPLOY_SH.split('if [ "$DESTROY" = true ]; then', 1)[1].split("fi", 1)[0]
+    assert destroy.index("cleanup_devops_agent_mcp") < destroy.index("run_terraform destroy")
+    full = TEARDOWN_SH.split("run_full_destroy() {", 1)[1]
+    for chunk in full.split("run_terraform destroy")[:-1]:
+        assert chunk.rstrip().endswith("cleanup_devops_agent_mcp")

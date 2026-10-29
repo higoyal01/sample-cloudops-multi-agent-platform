@@ -211,3 +211,15 @@ variable "devops_agent_coverage_cache_ttl_seconds" {
   type    = number
   default = 300
 }
+
+variable "devops_agent_mcp_enabled" {
+  description = "Expose gateway tools to AWS DevOps Agent (SSM devops_agent/mcp_enabled, written only when true)."
+  type        = bool
+  default     = false
+}
+
+variable "devops_agent_mcp_tools" {
+  description = "Comma-separated tools.json target keys exposed to AWS DevOps Agent (SSM devops_agent/mcp_tools, written only when enabled)."
+  type        = string
+  default     = "lambda-runtime"
+}

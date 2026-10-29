@@ -51,7 +51,7 @@ Each generic `server.py` reads `AGENT_NAME` from env and loads config from `hier
 
 If you see silent 424 errors with no useful logs: check for a protocol mismatch on the runtime.
 
-**Tool layer.** Lambda MCP tools live under `src/lambda/mcp/<tool>/` (one per AWS API surface). Schemas are in `src/lambda/mcp/tools.json`. Tools are registered as targets on a single AgentCore Gateway. Gateway targets reset to single-tool placeholder schemas on every `terraform apply`, so `deploy.sh` deletes `.lambda-hashes/gateway-tools.sha` immediately after apply to force `sync_gateway_tools` to re-upload the full multi-tool schemas.
+**Tool layer.** Lambda MCP tools live under `src/lambda/mcp/<tool>/` (one per AWS API surface). Schemas are in `src/lambda/mcp/tools.json`. Tools are registered as targets on a single AgentCore Gateway. Gateway targets reset to single-tool placeholder schemas on every `terraform apply`, so `deploy.sh` deletes `.lambda-hashes/gateway-tools.sha` immediately after apply to force `sync_gateway_tools` to re-upload the full multi-tool schemas. When `devops_agent_mcp_enabled` is on, `sync_devops_agent_mcp` runs right after it: Terraform owns only the IAM role DevOps Agent assumes (in `modules/core/agentcore-gateway`), and the sync registers the gateway in AWS DevOps Agent, allowlists the `DEVOPS_AGENT_MCP_TOOLS` targets and uploads the matching skill (hash-skipped via `.lambda-hashes/devops-agent-skill.sha`). Teardown deregisters before `terraform destroy`. See `docs/agents/lambda-upgrade.md`.
 
 Lambda handler routing: `tool_name = context.client_context.custom["bedrockAgentCoreToolName"].split("___")[1]`. The event body contains tool params directly — NOT wrapped.
 

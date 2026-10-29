@@ -58,3 +58,12 @@ variable "jwt_validation_claim" {
     error_message = "jwt_validation_claim must be one of: client, audience"
   }
 }
+variable "devops_agent_mcp_enabled" {
+  description = <<-EOT
+    Create the IAM role AWS DevOps Agent assumes to SigV4-sign MCP calls to
+    this gateway. The registration in DevOps Agent itself is done post-apply by
+    `sync_devops_agent_mcp` in scripts/lib/sync.sh. Requires gateway_auth = iam.
+  EOT
+  type        = bool
+  default     = false
+}

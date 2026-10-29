@@ -30,7 +30,18 @@ locals {
   # sensitive values use SecureString. `value` accepts empty strings —
   # an empty parameter is a valid "unset" signal and avoids having to
   # conditionally skip resources (which would break destroy / drift).
-  parameters = {
+  parameters = merge(local.base_parameters, local.devops_agent_mcp_parameters)
+
+  # DevOps Agent MCP access keys are added only while the feature is on, so an
+  # existing stack with it off plans zero changes from this feature. When the
+  # parameters are absent, `make configure` falls back to the defaults (false /
+  # lambda-runtime), which are exactly what a disabled stack runs with.
+  devops_agent_mcp_parameters = var.devops_agent_mcp_enabled ? {
+    "devops_agent/mcp_enabled" = { type = "String", value = "true" }
+    "devops_agent/mcp_tools"   = { type = "String", value = var.devops_agent_mcp_tools }
+  } : {}
+
+  base_parameters = {
     "aws_region"                                 = { type = "String", value = var.aws_region }
     "idp/type"                                   = { type = "String", value = var.idp_type }
     "idp/issuer_url"                             = { type = "String", value = var.custom_idp_issuer_url }

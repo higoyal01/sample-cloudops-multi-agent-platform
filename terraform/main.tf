@@ -102,6 +102,8 @@ module "shared_config" {
   devops_agent_max_age_minutes               = var.devops_agent_max_age_minutes
   devops_agent_sweep_interval_minutes        = var.devops_agent_sweep_interval_minutes
   devops_agent_coverage_cache_ttl_seconds    = var.devops_agent_coverage_cache_ttl_seconds
+  devops_agent_mcp_enabled                   = var.devops_agent_mcp_enabled
+  devops_agent_mcp_tools                     = join(",", var.devops_agent_mcp_tools)
 }
 
 # -----------------------------------------------------------------------------
@@ -580,6 +582,11 @@ module "agentcore_gateway" {
   lambda_tool_arns = {
     for k, v in module.lambda_tools : k => v.lambda_function_arn
   }
+
+  # Opt-in IAM role for AWS DevOps Agent to call this gateway over SigV4.
+  # Registration + tool allowlist + skill upload run post-apply in
+  # scripts/lib/sync.sh::sync_devops_agent_mcp (no aws-provider resources yet).
+  devops_agent_mcp_enabled = var.devops_agent_mcp_enabled
 }
 
 locals {

@@ -152,10 +152,33 @@ print('All versions deleted')
   info "State backend cleanup complete"
 }
 
+# Deregister the gateway from AWS DevOps Agent (disassociate from the Agent
+# Space, then deregister). Must run BEFORE terraform destroy: the registration
+# points at the invoke role and gateway that the destroy removes. Reads the
+# devops_agent_mcp output, falling back to what this workstation recorded at
+# registration. Uploaded skill assets are intentionally left in place.
+cleanup_devops_agent_mcp() {
+  local state_file="${HASH_DIR}/devops-agent-mcp.json"
+  local config
+  config=$(tf_output_json devops_agent_mcp)
+  if [ -z "$config" ] && [ -f "$state_file" ]; then
+    config=$(cat "$state_file")
+  fi
+  [ -z "$config" ] && return 0
+
+  info "Removing the gateway's AWS DevOps Agent registration..."
+  if _devops_agent_mcp_py cleanup "$config" 2>&1; then
+    rm -f "$state_file" "${HASH_DIR}/devops-agent-skill.sha"
+  else
+    warn "DevOps Agent cleanup failed (non-fatal). Deregister the MCP server in the DevOps Agent console."
+  fi
+}
+
 run_full_destroy() {
   # Step 1: Terraform destroy (if state backend is accessible)
   if aws s3api head-bucket --bucket "$S3_BUCKET" > /dev/null 2>&1 \
      && aws dynamodb describe-table --table-name "$DYNAMODB_TABLE" --region "$AWS_REGION" > /dev/null 2>&1; then
+    cleanup_devops_agent_mcp
     run_terraform destroy
   else
     # Recreate lock table if missing so terraform can acquire the lock
@@ -169,6 +192,7 @@ run_full_destroy() {
           --billing-mode PAY_PER_REQUEST \
           --region "$AWS_REGION" > /dev/null 2>&1
         aws dynamodb wait table-exists --table-name "$DYNAMODB_TABLE" --region "$AWS_REGION" 2>&1
+        cleanup_devops_agent_mcp
         run_terraform destroy
       else
         warn "State backend not found, skipping terraform destroy"

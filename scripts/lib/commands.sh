@@ -750,6 +750,39 @@ _configure_prompts() {
     fi
   fi
 
+  # -------------------------------------------------------------------------
+  # AWS DEVOPS AGENT MCP ACCESS — register the gateway in DevOps Agent, allow
+  # the chosen tool targets in an Agent Space, and upload the matching skill.
+  # Independent of the investigation integration above: it needs only the
+  # gateway, so it is offered for every tool selection (gateway-only included).
+  # Reuses the Agent Space ID/Region entered above when there is one.
+  # -------------------------------------------------------------------------
+  local mcp_enabled mcp_default mcp_space_id mcp_space_region mcp_tools
+  [ "$(shared_config_get DEVOPS_AGENT_MCP_ENABLED false)" = "true" ] && mcp_default="Y" || mcp_default="N"
+  echo
+  echo "=== AWS DevOps Agent MCP access ==="
+  echo
+  shared_config_prompt_yn mcp_enabled "Expose gateway tools to DevOps Agent?" "$mcp_default"
+  _answers_set DEVOPS_AGENT_MCP_ENABLED "$mcp_enabled"
+  if [ "$mcp_enabled" = "true" ]; then
+    mcp_space_id="$(_answers_get DEVOPS_AGENT_SPACE_ID)"
+    if [ -z "$mcp_space_id" ]; then
+      shared_config_prompt mcp_space_id "  Agent Space ID" \
+        "$(shared_config_get DEVOPS_AGENT_SPACE_ID "")"
+      if [ -z "$mcp_space_id" ]; then
+        log_error "Agent Space ID is required to expose gateway tools to DevOps Agent."
+        return 1
+      fi
+      shared_config_prompt mcp_space_region "  Agent Space Region (empty = platform Region)" \
+        "$(shared_config_get DEVOPS_AGENT_SPACE_REGION "")"
+      _answers_set DEVOPS_AGENT_SPACE_ID "$mcp_space_id"
+      _answers_set DEVOPS_AGENT_SPACE_REGION "$mcp_space_region"
+    fi
+    shared_config_prompt mcp_tools "  Tool targets to expose (comma-separated tools.json keys)" \
+      "$(shared_config_get DEVOPS_AGENT_MCP_TOOLS lambda-runtime)"
+    _answers_set DEVOPS_AGENT_MCP_TOOLS "$mcp_tools"
+  fi
+
   if [ "$need_netres_xacct" = 1 ]; then
     local netres_yn netres_arns
     local current_netres; current_netres="$(shared_config_get CROSS_ACCOUNT_NETWORK_RESILIENCE_ROLE_ARNS "")"

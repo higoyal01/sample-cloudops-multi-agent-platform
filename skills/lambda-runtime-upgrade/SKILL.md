@@ -37,11 +37,11 @@ discover_lambda_regions, get_function_code, etc.)?
     │                    (e.g. lambda:GetFunction) — that only returns a presigned
     │                    Code.Location URL you cannot open, so you cannot analyze
     │                    code and must not guess. Tell the user exactly this:
-    │                    "The lambda-runtime MCP tools aren't in my tool list. Register
-    │                    the CloudOps AgentCore gateway as an MCP server in this agent's
-    │                    capabilities (SigV4, service name bedrock-agentcore) and
-    │                    allowlist generate_upgrade_analysis + get_function_code, then
-    │                    re-run." You may still produce a runtime INVENTORY (names +
+    │                    "The lambda-runtime MCP tools aren't in my tool list. Deploy
+    │                    the CloudOps gateway with DEVOPS_AGENT_MCP_ENABLED=true
+    │                    (make deploy-auto registers it in this Agent Space and
+    │                    allowlists the lambda-runtime___* tools), then re-run."
+    │                    You may still produce a runtime INVENTORY (names +
     │                    runtimes + priority from the KB) using native ListFunctions,
     │                    clearly labelled as inventory-only with no code analysis.
 ```
@@ -186,7 +186,7 @@ Ships with the skill in the `reference/` folder. **Read it when you need it — 
 |------|--------------|
 | `reference/runtime-migration-kb.md` | Before classifying runtimes (Path A must map status manually) and before analyzing code. Authoritative deprecation/EOL dates, upgrade targets, and per-family breaking changes for Python, Node.js, Java, .NET, Ruby, and custom runtimes. |
 
-**Deployment asset (not for reading during a task):** `mcp-server/` holds a CloudFormation template and a prebuilt Lambda zip that deploy the MCP tools Path M uses. If the user has no `lambda-runtime` tools and wants Path M, point them to `mcp-server/README.md`. Don't load the YAML or the zip into context.
+**Setting up Path M:** the tools come from the CloudOps platform's gateway. If the user has no `lambda-runtime` tools and wants Path M, point them to "Use with AWS DevOps Agent" in `docs/agents/lambda-upgrade.md` of the CloudOps repository: one flag (`DEVOPS_AGENT_MCP_ENABLED=true`) plus `make deploy-auto` registers the gateway, allowlists the tools and uploads this skill.
 
 ## Output Template
 
